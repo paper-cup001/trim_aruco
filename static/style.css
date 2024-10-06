@@ -1,0 +1,13 @@
+.preview-container {
+    width: 480px;
+    height: 480px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    border: 1px solid #ccc;
+    overflow: hidden;
+}
+
+#previewCanvas {
+    object-fit: contain;
+}

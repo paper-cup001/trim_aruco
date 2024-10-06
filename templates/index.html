@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="{{ url_for('static', filename='opencv.js') }}" async></script>
+    <title>Perspective Transformation App</title>
+
+
+<!-- Bootstrap 5のCSSを読み込む -->
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+
+<style>
+
+    /* 画像プレビューのサイズ調整 /
+    .preview {
+        max-width: 100%;
+        max-height: 320px;
+        border: 1px solid #000;
+    }
+
+     / スライダーと文字を大きく /
+    input[type="range"] {
+        width: 100%;
+        height: 100rem; / スライダーを大きく /
+    }
+
+    label, span, h1, button {
+        font-size: 1rem; / 文字を大きく /
+    }
+
+    .btn {
+        padding: 1rem;
+        font-size: 1.5rem; / ボタンを大きく /
+    }
+
+    / ボタンを中央に配置 */
+    .button-group {
+        display: flex;
+        justify-content: center;
+        gap: 1rem;
+    }
+</style>
+
+</head>
+<body class="container">
+
+
+<h1 class="text-center mt-3">商品画像のトリミング</h1>
+
+<!-- エラーメッセージを表示するところ -->
+<div id="errorMessage" class="text-danger text-center mb-3"></div>
+
+<!-- プログレスバーを追加 -->
+<div class="progress mb-3 d-none" id="progressBar">
+    <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" style="width: 0%"></div>
+  </div>
+
+<!-- 画像のアップロード その際、エラーメッセージは消去される-->
+<div class="mb-3">
+    <input type="file" id="imageUpload" class="form-control" accept="image/*" onchange="clearErrorMessage(); loadImage(event)">
+</div>
+
+
+<!-- 機能Aと機能Bのボタンを横に並べる ボタンを押すとエラーメッセージは消去される-->
+<div class="button-group mb-3">
+
+    <button class="btn btn-primary" name="mode" value="outline" onclick="clearErrorMessage(); applyTransformAndSend('outline')">枠線を描画</button>
+    <button class="btn btn-primary" name="mode" value="crop" onclick="clearErrorMessage(); applyTransformAndSend('crop')">トリミング</button>
+    
+    <!-- トリミングの微調整パネルの折り畳みと展開 -->
+    <button class="btn btn-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#trimmingAdjustment" aria-expanded="false" aria-controls="trimmingAdjustment">
+        設定
+    </button>
+    
+    
+</div>
+
+<!-- トリミングの微調整パネル -->
+<div class="collapse mb-3" id="trimmingAdjustment">
+
+    <!-- チェックボックスを追加 -->
+    <div class="form-check">
+        <p>
+        <input class="form-check-input" type="checkbox" id="autoTrimCheckbox">
+        <label class="form-check-label" for="autoTrimCheckbox">
+            写真をアップロードしたら直ちにトリミングを実行
+        </label>
+        </p>
+    </div>
+
+
+    <!-- トリミングの微調整スライダー -->
+    <div class="mb-3">
+
+        <label for="yOffsetInput" class="form-label">トリミングの調整 上下:</label>
+        <span id="yOffsetValue">20</span> px
+        <input type="range" id="yOffsetInput" name="y_offset" min="-10" max="90" step="10" value="10" oninput="updateSliderValue('yOffsetValue', this.value)">
+    </div>
+
+    <div class="mb-3">
+        <label for="xOffsetInput" class="form-label">トリミングの調整 左右:</label>
+        <span id="xOffsetValue">-20</span> px
+        <input type="range" id="xOffsetInput" name="x_offset" min="-90" max="20" step="10" value="10" oninput="updateSliderValue('xOffsetValue', this.value)">
+    </div>
+    
+    <!-- 回転スライダー -->
+    <div class="mb-3">
+        <label for="rotationSlider" class="form-label">回転:</label>
+        <span id="rotationDisplay">0度</span>
+        <input type="range" id="rotationSlider" min="-0.9" max="0.9" step="0.1" value="0" oninput="applyPerspectiveTransform()">
+    </div>
+
+    <!-- 透視変換スライダー -->
+    <div class="mb-3">
+        <label for="perspectiveSlider">透視変換:</label>
+        <span id="ratioDisplay">0%</span> <!-- スライダーの値を表示 -->
+        <input type="range" id="perspectiveSlider" min="0" max="40" value="0" oninput="applyPerspectiveTransform()">
+
+    </div>
+   
+    <!-- プレビュー画面（１） -->
+    <canvas id="previewCanvas" class="preview mb-3"></canvas>
+    
+</div>
+
+
+
+<!-- 最終結果画像を非表示にする -->
+<img id="finalImage" class="img-fluid d-none" src="" alt="">
+
+
+
+
+
+
+<!-- Bootstrap 5のJSを読み込む -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+
+    // 初回時に折り畳みを展開する
+    document.addEventListener('DOMContentLoaded', function() {
+        const trimmingAdjustment = new bootstrap.Collapse(document.getElementById('trimmingAdjustment'), { show: true });
+    });
+
+    let originalImage = null;
+    let previewMat = null;
+
+    // エラーメッセージを消去する関数
+    function clearErrorMessage() {
+        document.getElementById('errorMessage').innerText = '';  // エラーメッセージを消去
+    }
+
+    // スライダー値を更新する関数
+    function updateSliderValue(elementId, value) {
+        document.getElementById(elementId).innerText = value;
+    }
+
+
+    // プログレスバーの表示・非表示を切り替える関数
+    function toggleProgressBar(show) {
+    const progressBar = document.getElementById('progressBar');
+    if (show) {
+        progressBar.classList.remove('d-none');
+    } else {
+        progressBar.classList.add('d-none');
+    }
+    }
+
+    // プログレスバーの進捗状況を更新する関数
+    function updateProgressBar(progress) {
+    const progressBar = document.querySelector('.progress-bar');
+    progressBar.style.width = `${progress}%`;
+    progressBar.setAttribute('aria-valuenow', progress);
+    }
+
+    // 10秒後にタイムアウトする関数
+    function handleTimeout() {
+    setTimeout(() => {
+        updateProgressBar(100);
+        toggleProgressBar(false);
+        // エラーメッセージを表示する処理を追加
+        document.getElementById('errorMessage').innerText = 'タイムアウトしました。';
+    }, 10000);
+    }
+
+
+    // ボタンを無効化する関数
+    function disableButtons() {
+        document.querySelectorAll('.btn-primary, .btn-secondary').forEach(button => {
+            button.disabled = true;
+        });
+    }
+
+    // ボタンを有効化する関数
+    function enableButtons() {
+        document.querySelectorAll('.btn-primary, .btn-secondary').forEach(button => {
+            button.disabled = false;
+        });
+    }
+
+
+    // トリミングの微調整パネルを折りたたむ関数
+    function collapseTrimmingAdjustmentPanel() {
+        const trimmingAdjustment = new bootstrap.Collapse(document.getElementById('trimmingAdjustment'));
+        trimmingAdjustment.toggle();
+    }
+
+    // 画像を読み込み、オリジナル画像とプレビュー画像に設定
+    function loadImage(event) {
+        const file = event.target.files[0];
+        const reader = new FileReader();
+
+        reader.onload = function(e) {
+            const img = new Image();
+            img.onload = function() {
+                originalImage = img;
+
+                // OpenCVで画像を読み込み
+                let canvas = document.createElement('canvas');
+                canvas.width = img.width;
+                canvas.height = img.height;
+                let ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+
+                let imgData = ctx.getImageData(0, 0, img.width, img.height);
+                originalMat = cv.matFromImageData(imgData);
+
+                // プレビュー用に縮小
+                let previewCanvas = document.createElement('canvas');
+                let maxSize = 320;
+                let scale = Math.min(maxSize / img.width, maxSize / img.height);
+                previewCanvas.width = img.width * scale;
+                previewCanvas.height = img.height * scale;
+
+                let previewCtx = previewCanvas.getContext('2d');
+                previewCtx.drawImage(img, 0, 0, previewCanvas.width, previewCanvas.height);
+
+                let previewImgData = previewCtx.getImageData(0, 0, previewCanvas.width, previewCanvas.height);
+                previewMat = cv.matFromImageData(previewImgData);
+
+                // スライダーの現在の比率を適用してプレビュー表示
+                applyPerspectiveTransform();
+
+                // 最終結果画像をリセット
+                document.getElementById('finalImage').src = '';
+
+                // チェックボックスがオンの場合、機能B（mode='crop'）を実行
+                const autoTrim = document.getElementById('autoTrimCheckbox').checked;
+                if (autoTrim) {
+                    applyTransformAndSend('crop');
+                } else {
+                    // チェックボックスがオフの場合、トリミング微調整パネルを展開
+                    const trimmingAdjustment = document.getElementById('trimmingAdjustment');
+                    if (!trimmingAdjustment.classList.contains('show')) {
+                        // パネルが閉じていたら展開する
+                        const bootstrapCollapse = new bootstrap.Collapse(trimmingAdjustment, { show: true });
+                    }
+                }
+                
+ 
+                
+            };
+            img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+    }
+
+    // 画像を表示（サイズを調整）
+    function displayImage(mat, canvasId, maxSize) {
+        let canvas = document.getElementById(canvasId);
+        let ctx = canvas.getContext('2d');
+        let imgData = new ImageData(new Uint8ClampedArray(mat.data), mat.cols, mat.rows);
+
+        let scale = Math.min(maxSize / mat.cols, maxSize / mat.rows);
+        canvas.width = mat.cols * scale;
+        canvas.height = mat.rows * scale;
+
+        // 一度オリジナルサイズの画像を描画してから、縮小
+        let tmpCanvas = document.createElement('canvas');
+        tmpCanvas.width = mat.cols;
+        tmpCanvas.height = mat.rows;
+        let tmpCtx = tmpCanvas.getContext('2d');
+        tmpCtx.putImageData(imgData, 0, 0);
+
+        ctx.drawImage(tmpCanvas, 0, 0, canvas.width, canvas.height);
+    }
+
+    // スライダーを動かすとプレビュー用画像に透視変換および回転を適用
+    function applyPerspectiveTransform() {
+        if (!previewMat) return;
+
+        const width = previewMat.cols;
+        const height = previewMat.rows;
+
+        let src = previewMat.clone();  // プレビュー用画像を維持するためにクローンを作成
+        let dst = new cv.Mat();
+
+        // スライダーの値（比率と回転）を取得
+        let ratio = parseInt(perspectiveSlider.value) / 100;
+        let rotationAngle = - parseFloat(rotationSlider.value); // マイナスして左右回転を逆にしている
+
+        // 透視変換用の4つの座標
+        let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+            0, 0,          // 左上
+            width, 0,      // 右上
+            width, height, // 右下
+            0, height      // 左下
+        ]);
+
+        // スライダーの比率に応じた変換座標
+        let topLength = width * (1 - ratio); // topの長さを比率で決定
+        let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+            (width - topLength) / 2, 0,            // 左上
+            (width + topLength) / 2, 0,            // 右上
+            width , height ,                         // 右下
+            0 , height                              // 左下
+        ]);
+
+        // 透視変換行列を計算して適用
+        let transformMatrix = cv.getPerspectiveTransform(srcCoords, dstCoords);
+        cv.warpPerspective(src, dst, transformMatrix, new cv.Size(width, height));
+
+        // 回転を適用
+        let center = new cv.Point(width / 2, height / 2);
+        let rotationMatrix = cv.getRotationMatrix2D(center, rotationAngle, 1);
+        cv.warpAffine(dst, dst, rotationMatrix, new cv.Size(width, height));
+
+        // 透視変換後にプレビュー用のキャンバスに表示
+        displayImage(dst, 'previewCanvas', 320);
+
+        // メモリ解放
+        src.delete();
+        dst.delete();
+        srcCoords.delete();
+        dstCoords.delete();
+        transformMatrix.delete();
+        rotationMatrix.delete();
+
+        // スライダーの値を更新
+        updateDisplays();  // 回転角度と比率を表示する関数を呼び出す
+    }
+
+    // スライダーの表示値を更新する関数
+    function updateDisplays() {
+        // 透視変換比率の表示
+        document.getElementById('ratioDisplay').innerText = perspectiveSlider.value + '%';
+
+        // 回転角度の表示（そのままスライダーの値を度数として表示）
+        document.getElementById('rotationDisplay').innerText = rotationSlider.value + '度';
+    }
+
+
+
+    
+    let timeoutId; // タイムアウトIDを保持する変数
+
+    // プログレスバーの進捗状況を更新する関数
+    function updateProgressBarSmoothly(duration, interval) {
+        let progress = 0;
+        const totalSteps = duration / interval;
+        const stepPercentage = 100 / totalSteps;
+
+        const progressInterval = setInterval(() => {
+            progress += stepPercentage;
+            updateProgressBar(progress);
+
+            if (progress >= 100) {
+                clearInterval(progressInterval); // 100%になったらタイマーを止める
+            }
+        }, interval);
+    }
+
+    // 10秒後にタイムアウトする関数
+    function handleTimeout() {
+        timeoutId = setTimeout(() => {
+            updateProgressBar(100);
+            toggleProgressBar(false);
+            // エラーメッセージを表示する処理を追加
+            document.getElementById('errorMessage').innerText = 'タイムアウトしました。';
+            // ボタンを再度有効化
+            enableButtons();   
+            
+        }, 10000);
+    }
+
+    // 「機能A」「機能B」ボタンがクリックされたらトリミングと送信処理を行う
+    function applyTransformAndSend(mode) {
+        if (!originalMat) return;
+
+        // ボタンを無効化
+        disableButtons();
+
+        // プログレスバーを表示し、進捗状況を0%に設定
+        toggleProgressBar(true);
+        updateProgressBar(0);
+
+        // 8秒間でプログレスバーが100%になるように設定
+        updateProgressBarSmoothly(10000, 800); // 8秒間で0.5秒ごとに更新
+
+        // 10秒後にタイムアウトする処理を開始
+        handleTimeout();
+
+        const width = originalMat.cols;
+        const height = originalMat.rows;
+
+        let src = originalMat.clone();  // オリジナル画像のクローン
+        let dst = new cv.Mat();
+
+        // スライダーの値（比率、回転、オフセット）を取得
+        let ratio = parseInt(perspectiveSlider.value) / 100;
+        let rotationAngle = - parseFloat(rotationSlider.value); // マイナスにしている
+        let yOffset = parseInt(document.getElementById('yOffsetInput').value);
+        let xOffset = parseInt(document.getElementById('xOffsetInput').value);
+
+        // トリミングや回転を適用（ここでは簡略化して透視変換と回転のみ）
+        let topLength = width * (1 - ratio); // 比率に基づく座標変換
+        let dstCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+            (width - topLength) / 2 , 0,            // 左上
+            (width + topLength) / 2 , 0,            // 右上
+            width , height ,                         // 右下
+            0 , height                               // 左下
+        ]);
+
+        // 透視変換行列を計算して適用
+        let srcCoords = cv.matFromArray(4, 1, cv.CV_32FC2, [
+            0, 0,          // 左上
+            width, 0,      // 右上
+            width, height, // 右下
+            0, height      // 左下
+        ]);
+        let transformMatrix = cv.getPerspectiveTransform(srcCoords, dstCoords);
+        cv.warpPerspective(src, dst, transformMatrix, new cv.Size(width, height));
+
+        // 回転を適用
+        let center = new cv.Point(width / 2, height / 2);
+        let rotationMatrix = cv.getRotationMatrix2D(center, rotationAngle, 1);
+        cv.warpAffine(dst, dst, rotationMatrix, new cv.Size(width, height));
+
+        // iphone SE2 の写真は 3024*4032であるが、出力が1080なので、2160まで縮小する
+        // 画像をリサイズ 4032
+        const maxSize = 4032;
+        let scale = Math.min(maxSize / dst.cols, maxSize / dst.rows);
+        let resizedMat = new cv.Mat();
+	    cv.resize(dst, resizedMat, new cv.Size(dst.cols * scale, dst.rows * scale));
+ 
+
+        // キャンバスを作成して画像データを取得
+        let canvas = document.createElement('canvas');
+        cv.imshow(canvas, resizedMat);
+
+        // JPEG形式で画像データを取得（画質90%で圧縮）
+        canvas.toBlob(function(blob) {
+        
+            // FormDataを使用して画像とその他のデータを送信
+            let formData = new FormData();
+            formData.append('image', blob, 'image.jpg');
+            formData.append('mode', mode);
+            formData.append('x_offset', xOffset);
+            formData.append('y_offset', yOffset);
+
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                // 成功時の処理
+                if (response.ok) {
+                    return response.json();
+                } else {
+                    return response.json().then(errorData => {
+                        // タイムアウト処理をキャンセル
+                        clearTimeout(timeoutId);
+                        // エラーメッセージを表示
+                        document.getElementById('errorMessage').innerText = errorData.error;
+                        throw new Error(errorData.error);
+                    });
+                }
+            })
+            .then(data => {
+                // タイムアウト処理をキャンセル
+                clearTimeout(timeoutId);
+                
+                // 処理成功時にボタンを再度有効化
+                enableButtons();   
+             
+                // パネルが開いていたら閉じる。パネルが閉じていたら何もしない（閉じっぱなし）
+                if (data.image && document.getElementById('trimmingAdjustment').classList.contains('show')) {
+                    collapseTrimmingAdjustmentPanel();
+                }
+
+
+                // 返された画像を表示
+                document.getElementById('finalImage').src = data.image;
+
+                // 画像があれば非表示にする
+                if (!data.image) {
+                    document.getElementById('finalImage').classList.add('d-none');
+                } else {
+                    document.getElementById('finalImage').classList.remove('d-none');
+                }
+
+                document.getElementById('errorMessage').innerText = '';  // エラーメッセージをリセット
+
+                // プログレスバーの進捗状況を100%に更新
+                updateProgressBar(100);
+                
+
+                
+                
+                
+            })
+            .catch(error => {
+                // エラー時もボタンを再度有効化
+                enableButtons();
+                
+                console.error('Error:', error);
+            })
+            .finally(() => {
+                // プログレスバーを非表示にする
+                toggleProgressBar(false);
+            });
+
+
+            // メモリの解放
+            src.delete();
+            dst.delete();
+            srcCoords.delete();
+            dstCoords.delete();
+            transformMatrix.delete();
+            rotationMatrix.delete();
+            resizedMat.delete();
+        }, 'image/jpeg', 0.9);  // ここでJPEG圧縮率を指定
+    }
+
+
+
+
+</script>
+
+</body>
+</html>
