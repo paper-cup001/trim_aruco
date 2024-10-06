@@ -441,7 +441,7 @@
 
         // iphone SE2 の写真は 3024*4032であるが、出力が1080なので、2160まで縮小する
         // 画像をリサイズ 4032
-        const maxSize = 4032;
+        const maxSize = 2160;
         let scale = Math.min(maxSize / dst.cols, maxSize / dst.rows);
         let resizedMat = new cv.Mat();
 	    cv.resize(dst, resizedMat, new cv.Size(dst.cols * scale, dst.rows * scale));
